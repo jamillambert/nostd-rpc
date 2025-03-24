@@ -3,4 +3,10 @@ name = "nostd-rpc"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["phy-tuntap_interface"]
+phy-tuntap_interface = ["smoltcp/phy-tuntap_interface"]
+
 [dependencies]
+smoltcp = {version = "0.12.0", features = ["phy-tuntap_interface"]}
+getopts = "0.2"
