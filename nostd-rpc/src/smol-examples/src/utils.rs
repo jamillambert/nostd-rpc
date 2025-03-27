@@ -1,9 +1,7 @@
 #![allow(dead_code)]
 
-#[cfg(feature = "log")]
 use env_logger::Builder;
 use getopts::{Matches, Options};
-#[cfg(feature = "log")]
 use log::{trace, Level, LevelFilter};
 use std::env;
 use std::fs::File;
@@ -12,13 +10,11 @@ use std::process;
 use std::str::{self, FromStr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "phy-tuntap_interface")]
 use smoltcp::phy::TunTapInterface;
 use smoltcp::phy::{Device, FaultInjector, Medium, Tracer};
 use smoltcp::phy::{PcapMode, PcapWriter};
 use smoltcp::time::{Duration, Instant};
 
-#[cfg(feature = "log")]
 pub fn setup_logging_with_clock<F>(filter: &str, since_startup: F)
 where
     F: Fn() -> Instant + Send + Sync + 'static,
@@ -59,7 +55,6 @@ where
         .init();
 }
 
-#[cfg(feature = "log")]
 pub fn setup_logging(filter: &str) {
     setup_logging_with_clock(filter, Instant::now)
 }
@@ -96,7 +91,6 @@ pub fn add_tuntap_options(opts: &mut Options, _free: &mut [&str]) {
     opts.optopt("", "tap", "TAP interface to use", "tap0");
 }
 
-#[cfg(feature = "phy-tuntap_interface")]
 pub fn parse_tuntap_options(matches: &mut Matches) -> TunTapInterface {
     let tun = matches.opt_str("tun");
     let tap = matches.opt_str("tap");
@@ -203,7 +197,6 @@ where
     );
 
     let device = Tracer::new(device, |_timestamp, _printer| {
-        #[cfg(feature = "log")]
         trace!("{}", _printer);
     });
 
