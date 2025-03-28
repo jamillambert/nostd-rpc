@@ -92,39 +92,39 @@ impl HttpRequest {
         let mut sockets = SocketSet::new(vec![]);
         let tcp_handle = sockets.add(tcp_socket);
         let mut device = TunTapInterface::new("tap", Medium::Ethernet).unwrap();
-        let address = IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24);
+        let address = IpCidr::new(IpAddress::v4(192, 168, 1, 58), 24);
         let config = match device.capabilities().medium {
-        Medium::Ethernet => {
-            Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into())
-        }
-        Medium::Ip => Config::new(smoltcp::wire::HardwareAddress::Ip),
-        Medium::Ieee802154 => todo!(),
-    };
+            Medium::Ethernet => {
+                Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into())
+            }
+            Medium::Ip => Config::new(smoltcp::wire::HardwareAddress::Ip),
+            Medium::Ieee802154 => todo!(),
+        };
         let mut iface = Interface::new(config, &mut device, Instant::now());
-    iface.update_ip_addrs(|ip_addrs| {
-        ip_addrs
-            .push(IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24))
+        iface.update_ip_addrs(|ip_addrs| {
+            ip_addrs
+                .push(IpCidr::new(IpAddress::v4(192, 168, 1, 254), 24))
+                .unwrap();
+            ip_addrs
+                .push(IpCidr::new(IpAddress::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64))
+                .unwrap();
+            ip_addrs
+                .push(IpCidr::new(IpAddress::v6(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64))
+                .unwrap();
+        });
+        iface
+            .routes_mut()
+            .add_default_ipv4_route(Ipv4Address::new(192, 168, 1, 58))
             .unwrap();
-        ip_addrs
-            .push(IpCidr::new(IpAddress::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64))
+        iface
+            .routes_mut()
+            .add_default_ipv6_route(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x100))
             .unwrap();
-        ip_addrs
-            .push(IpCidr::new(IpAddress::v6(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64))
-            .unwrap();
-    });
-    iface
-        .routes_mut()
-        .add_default_ipv4_route(Ipv4Address::new(192, 168, 69, 100))
-        .unwrap();
-    iface
-        .routes_mut()
-        .add_default_ipv6_route(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x100))
-        .unwrap();
 
         let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
         let cx = iface.context();
 
-        let response = tcp_socket.send_slice(request.as_bytes());
+        let response = socket.send_slice(request.as_bytes());
         response
     }
 
