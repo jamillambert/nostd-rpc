@@ -3,4 +3,3 @@
 extern crate alloc;
 
 mod http;
-mod smolclient;
