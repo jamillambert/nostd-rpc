@@ -5,7 +5,7 @@ use std::os::unix::io::AsRawFd;
 use std::str::{self, FromStr};
 use url::Url;
 
-use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::iface::{Config, a, SocketSet};
 use smoltcp::phy::{wait as phy_wait, Device, Medium};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;

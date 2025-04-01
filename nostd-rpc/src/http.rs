@@ -3,13 +3,11 @@ use alloc::vec::Vec;
 use alloc::vec;
 use core::time::Duration;
 
+use smoltcp::iface::{Interface, SocketSet};
 use smoltcp::socket::tcp;
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{wait as phy_wait, Device, Medium};
-use smoltcp::phy::TunTapInterface;
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv6Address};
-
+use smoltcp::wire::Ipv4Address;
+use smoltcp::phy::{TunTapInterface, Medium, wait};
 
 const DEFAULT_URL: &str = "http://localhost";
 const DEFAULT_PORT: u16 = 8332; // the default RPC port for bitcoind.
@@ -78,56 +76,6 @@ impl HttpRequest {
         self
     }
 
-    /// Sends the HTTP request using smoltcp and returns the response.
-    /// The response is returned as a string.
-    /// If the request fails, an error message is returned.
-    /// No other dependencies are required.  Works in no-std.
-    /// This does not use minreq, but instead uses smoltcp.
-    pub fn send(&self) -> Result<usize, smoltcp::socket::tcp::SendError> {
-        let request = self.construct_http_request();
-
-        let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
-        let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
-        let mut tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
-        let mut sockets = SocketSet::new(vec![]);
-        let tcp_handle = sockets.add(tcp_socket);
-        let mut device = TunTapInterface::new("tap", Medium::Ethernet).unwrap();
-        let address = IpCidr::new(IpAddress::v4(192, 168, 1, 58), 24);
-        let config = match device.capabilities().medium {
-            Medium::Ethernet => {
-                Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into())
-            }
-            Medium::Ip => Config::new(smoltcp::wire::HardwareAddress::Ip),
-            Medium::Ieee802154 => todo!(),
-        };
-        let mut iface = Interface::new(config, &mut device, Instant::now());
-        iface.update_ip_addrs(|ip_addrs| {
-            ip_addrs
-                .push(IpCidr::new(IpAddress::v4(192, 168, 1, 254), 24))
-                .unwrap();
-            ip_addrs
-                .push(IpCidr::new(IpAddress::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64))
-                .unwrap();
-            ip_addrs
-                .push(IpCidr::new(IpAddress::v6(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64))
-                .unwrap();
-        });
-        iface
-            .routes_mut()
-            .add_default_ipv4_route(Ipv4Address::new(192, 168, 1, 58))
-            .unwrap();
-        iface
-            .routes_mut()
-            .add_default_ipv6_route(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x100))
-            .unwrap();
-
-        let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
-        let cx = iface.context();
-
-        let response = socket.send_slice(request.as_bytes());
-        response
-    }
-
     /// Manually construct the HTTP request as a string.
     fn construct_http_request(&self) -> String {
         let mut request = String::new();
@@ -152,6 +100,47 @@ impl HttpRequest {
     }
 }
 
+pub fn send<D>(
+    iface: &mut Interface,
+    sockets: &mut SocketSet<'_>,
+    ip: Ipv4Address,
+    port: u16,
+    payload: &str,
+) -> Result<(), &'static str> {
+    // Create a TCP socket
+    let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
+    let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
+    let mut tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
+
+    // Add the socket to the socket set
+    let handle = sockets.add(tcp_socket);
+    let tcp_handle = sockets.add(tcp_socket);
+
+    // Get a mutable reference to the socket
+    let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
+
+    let cx = iface.context();
+    // Establish the connection
+    let local_port = 12345; // TODO use a random local port
+    socket.connect(cx, (ip, 80), local_port).map_err(|_| "Failed to connect")?;
+    let device = TunTapInterface::new("tap", Medium::Ethernet).unwrap();
+    let fd = device.as_raw_fd();
+    // Poll until the connection is established
+    while !socket.may_send() {
+        iface.poll(Instant::now(), device, sockets);
+        wait(fd, iface.poll_delay(Instant::now(), &sockets)).expect("wait error")
+    }
+
+    // Send the payload
+    if socket.can_send() {
+        socket.send_slice(payload.as_bytes()).map_err(|_| "Failed to send")?;
+    }
+
+    // Close the connection gracefully
+    socket.close();
+
+    Ok(())
+}
 
 fn append_port(url: &str, port: u16) -> String {
     // Append the port to the URL and return the string in no-std.
@@ -190,15 +179,4 @@ mod tests {
         assert_eq!(u16_to_string(8332), "8332");
     }
 
-    #[test]
-    fn test_send() {
-        let request = HttpRequest::new()
-            .url("http://localhost")
-            .method("POST")
-            .header("Content-Type: application/json")
-            .body(r#"{"jsonrpc":"2.0","method":"getblockchaininfo","params":[],"id":1}"#)
-            .timeout(Duration::from_secs(15));
-        let response = request.send();
-        assert_eq!(response, Ok(0));
-    }
 }
