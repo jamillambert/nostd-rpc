@@ -2,11 +2,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
 
-use smoltcp::iface::{Interface, SocketSet};
+use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::Ipv4Address;
-use smoltcp::phy::{TunTapInterface, FaultInjector, Medium, Tracer};
+use smoltcp::wire::{EthernetAddress, IpAddress, Ipv4Address, IpCidr};
+use smoltcp::phy::{TunTapInterface, Medium};
 
 const DEFAULT_URL: &str = "http://localhost";
 const DEFAULT_PORT: u16 = 8332; // the default RPC port for bitcoind.
@@ -99,6 +99,24 @@ impl HttpRequest {
     }
 }
 
+fn create_interface() -> Interface {
+    let mut device = TunTapInterface::new("tap", Medium::Ethernet).unwrap();
+    let mut config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into());
+    config.random_seed = 0; // Use a fixed seed for testing purposes.
+
+    let mut iface = Interface::new(config, &mut device, Instant::now());
+    iface.update_ip_addrs(|ip_addrs| {
+        ip_addrs
+            .push(IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24))
+            .unwrap();
+    });
+    iface
+        .routes_mut()
+        .add_default_ipv4_route(Ipv4Address::new(192, 168, 69, 100))
+        .unwrap();
+    iface
+}
+
 pub fn send<D>(
     iface: &mut Interface,
     sockets: &mut SocketSet<'_>,
@@ -106,51 +124,19 @@ pub fn send<D>(
     port: u16,
     payload: String,
 ) -> Result<(), &'static str> {
-    // Create a TCP socket
     let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
     let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
-    let mut tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
-
-    // Add the socket to the socket set
-    let handle = sockets.add(tcp_socket);
+    let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
     let tcp_handle = sockets.add(tcp_socket);
-
-    // Get a mutable reference to the socket
     let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
-
     let cx = iface.context();
-    // Establish the connection
-    let local_port = 12345; // TODO use a random local port
-    socket.connect(cx, (ip, 80), local_port).map_err(|_| "Failed to connect")?;
-    let device = TunTapInterface::new("tap", Medium::Ethernet).unwrap();
 
-    let device = Tracer::new(
-        TunTapInterface::new("tap", Medium::Ethernet).unwrap(),
-        |_timestamp, _printer| {
-            // Log or inspect the data here if needed
-        },
-    );
+    socket.connect(cx, (ip, 80), port).map_err(|_| "Failed to connect")?;
 
-    let seed = 1234; // TODO use a random seed
-    let mut device = FaultInjector::new(device, seed);
-    device.set_drop_chance(0);
-    device.set_corrupt_chance(0);
-    device.set_max_packet_size(9999);
-    device.set_max_tx_rate(9999);
-    device.set_max_rx_rate(9999);
-    device.set_bucket_interval(Duration::from_millis(60));
-    // Poll until the connection is established
-    while !socket.may_send() {
-        // Poll the interface
-        iface.poll(Instant::now(), &mut device, sockets);
-    }
-
-    // Send the payload
     if socket.can_send() {
         socket.send_slice(payload.as_bytes()).map_err(|_| "Failed to send")?;
     }
 
-    // Close the connection gracefully
     socket.close();
 
     Ok(())
