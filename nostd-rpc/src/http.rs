@@ -1,13 +1,12 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
-use core::time::Duration;
 
 use smoltcp::iface::{Interface, SocketSet};
 use smoltcp::socket::tcp;
-use smoltcp::time::Instant;
+use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::Ipv4Address;
-use smoltcp::phy::{TunTapInterface, Medium, wait};
+use smoltcp::phy::{TunTapInterface, FaultInjector, Medium, Tracer};
 
 const DEFAULT_URL: &str = "http://localhost";
 const DEFAULT_PORT: u16 = 8332; // the default RPC port for bitcoind.
@@ -77,7 +76,7 @@ impl HttpRequest {
     }
 
     /// Manually construct the HTTP request as a string.
-    fn construct_http_request(&self) -> String {
+    pub fn construct_http_request(&self) -> String {
         let mut request = String::new();
         request.push_str(&self.method);
         request.push(' ');
@@ -105,7 +104,7 @@ pub fn send<D>(
     sockets: &mut SocketSet<'_>,
     ip: Ipv4Address,
     port: u16,
-    payload: &str,
+    payload: String,
 ) -> Result<(), &'static str> {
     // Create a TCP socket
     let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
@@ -124,11 +123,26 @@ pub fn send<D>(
     let local_port = 12345; // TODO use a random local port
     socket.connect(cx, (ip, 80), local_port).map_err(|_| "Failed to connect")?;
     let device = TunTapInterface::new("tap", Medium::Ethernet).unwrap();
-    let fd = device.as_raw_fd();
+
+    let device = Tracer::new(
+        TunTapInterface::new("tap", Medium::Ethernet).unwrap(),
+        |_timestamp, _printer| {
+            // Log or inspect the data here if needed
+        },
+    );
+
+    let seed = 1234; // TODO use a random seed
+    let mut device = FaultInjector::new(device, seed);
+    device.set_drop_chance(0);
+    device.set_corrupt_chance(0);
+    device.set_max_packet_size(9999);
+    device.set_max_tx_rate(9999);
+    device.set_max_rx_rate(9999);
+    device.set_bucket_interval(Duration::from_millis(60));
     // Poll until the connection is established
     while !socket.may_send() {
-        iface.poll(Instant::now(), device, sockets);
-        wait(fd, iface.poll_delay(Instant::now(), &sockets)).expect("wait error")
+        // Poll the interface
+        iface.poll(Instant::now(), &mut device, sockets);
     }
 
     // Send the payload
