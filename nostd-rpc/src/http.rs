@@ -105,19 +105,11 @@ fn create_interface() -> Interface {
     config.random_seed = 0; // Use a fixed seed for testing purposes.
 
     let mut iface = Interface::new(config, &mut device, Instant::now());
-    iface.update_ip_addrs(|ip_addrs| {
-        ip_addrs
-            .push(IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24))
-            .unwrap();
-    });
-    iface
-        .routes_mut()
-        .add_default_ipv4_route(Ipv4Address::new(192, 168, 69, 100))
-        .unwrap();
+    iface.set_any_ip(true);
     iface
 }
 
-pub fn send<D>(
+pub fn send(
     iface: &mut Interface,
     sockets: &mut SocketSet<'_>,
     ip: Ipv4Address,
@@ -179,4 +171,21 @@ mod tests {
         assert_eq!(u16_to_string(8332), "8332");
     }
 
+    #[test]
+    fn test_create_interface() {
+        let iface = create_interface();
+        assert!(iface.any_ip(), "Interface should allow any IP");
+    }
+
+    #[test]
+    fn test_send() {
+        let mut iface = create_interface();
+        let mut sockets = SocketSet::new(vec![]);
+        let ip = Ipv4Address::new(127, 0, 0, 1);
+        let port = 8332;
+        let payload = String::from("Test payload");
+
+        let result = send(&mut iface, &mut sockets, ip, port, payload);
+        assert!(result.is_ok(), "Send function should succeed");
+    }
 }
