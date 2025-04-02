@@ -99,39 +99,90 @@ impl HttpRequest {
     }
 }
 
-fn create_interface() -> Interface {
-    let mut device = TunTapInterface::new("tap", Medium::Ethernet).unwrap();
-    let mut config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into());
-    config.random_seed = 0; // Use a fixed seed for testing purposes.
-
-    let mut iface = Interface::new(config, &mut device, Instant::now());
-    iface.set_any_ip(true);
-    iface
-}
-
 pub fn send(
-    iface: &mut Interface,
-    sockets: &mut SocketSet<'_>,
-    ip: Ipv4Address,
+    ip: [u8; 4],
     port: u16,
-    payload: String,
-) -> Result<(), &'static str> {
+    _payload: String,
+) -> String {
     let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
     let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
     let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
-    let tcp_handle = sockets.add(tcp_socket);
-    let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
-    let cx = iface.context();
+    let mut device = TunTapInterface::new("tap0", Medium::Ethernet).unwrap();
+    let mut config = Config::new(EthernetAddress([0x00, 0x15, 0x5d, 0xc7, 0xbf, 0x6d]).into()); //00:15:5d:c7:bf:6d
+    config.random_seed = 0; // Use a fixed seed for testing purposes.
 
-    socket.connect(cx, (ip, 80), port).map_err(|_| "Failed to connect")?;
+    let mut iface = Interface::new(config, &mut device, Instant::now());
+    iface.update_ip_addrs(|ip_addrs| {
+        ip_addrs
+            .push(IpCidr::new(IpAddress::v4(172, 28, 24, 156), 20)) // Local IP with subnet mask
+            .unwrap();
+    });
+    iface
+        .routes_mut()
+        .add_default_ipv4_route(Ipv4Address::new(172, 28, 16, 1)) // Default gateway
+        .unwrap();
 
-    if socket.can_send() {
-        socket.send_slice(payload.as_bytes()).map_err(|_| "Failed to send")?;
+    let mut sockets = SocketSet::new(vec![]);
+    let tcp_handle = sockets.add(tcp_socket);  let ipv4 = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
+
+    enum State {
+        Connect,
+        Request,
+        Response,
+    }
+    let mut state = State::Connect;
+
+    let mut response = String::new();
+
+    for _ in 0..100 {
+        let timestamp = Instant::now();
+        iface.poll(timestamp, &mut device, &mut sockets);
+
+        let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
+        let cx = iface.context();
+
+        state = match state {
+            State::Connect if !socket.is_active() => {
+                let _ = socket
+                    .connect(cx, (ipv4, 80), port);
+                State::Request
+            }
+            State::Request if socket.may_send() => {
+                let http_get = "GET www.example.org HTTP/1.1\r\n";
+                socket.send_slice(http_get.as_ref()).expect("cannot send");
+                let http_host = "Host: http://www.example.org/\r\n";
+                socket.send_slice(http_host.as_ref()).expect("cannot send");
+                socket
+                    .send_slice(b"Connection: close\r\n")
+                    .expect("cannot send");
+                socket.send_slice(b"\r\n").expect("cannot send");
+                State::Response
+            }
+            State::Response if socket.can_recv() => {
+                socket
+                    .recv(|data| {
+                        // Append the received data to the response buffer
+                        response.push_str(alloc::str::from_utf8(data).expect("Invalid UTF-8 sequence"));
+                        (data.len(), ())
+                    })
+                    .unwrap();
+                State::Response
+            }
+            State::Response if !socket.may_recv() => break,
+            _ => state,
+        };
+
+        let start_time = Instant::now();
+        let mut waiting = 0;
+        // wait for 0.1 seconds
+        while waiting < 100 {
+            let current_time = Instant::now();
+            let duration = current_time - start_time;
+            waiting = duration.total_millis();
+        }
     }
 
-    socket.close();
-
-    Ok(())
+    response
 }
 
 fn append_port(url: &str, port: u16) -> String {
@@ -172,20 +223,12 @@ mod tests {
     }
 
     #[test]
-    fn test_create_interface() {
-        let iface = create_interface();
-        assert!(iface.any_ip(), "Interface should allow any IP");
-    }
-
-    #[test]
     fn test_send() {
-        let mut iface = create_interface();
-        let mut sockets = SocketSet::new(vec![]);
-        let ip = Ipv4Address::new(127, 0, 0, 1);
-        let port = 8332;
+        let ip = [81, 130, 109, 40];
+        let port = 1234;
         let payload = String::from("Test payload");
 
-        let result = send(&mut iface, &mut sockets, ip, port, payload);
-        assert!(result.is_ok(), "Send function should succeed");
+        let result = send(ip, port, payload);
+        assert_eq!(result, "expected result");
     }
 }
