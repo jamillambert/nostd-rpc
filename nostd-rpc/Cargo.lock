@@ -103,6 +103,7 @@ name = "nostd-rpc"
 version = "0.1.0"
 dependencies = [
  "getopts",
+ "log",
  "smoltcp",
 ]
 

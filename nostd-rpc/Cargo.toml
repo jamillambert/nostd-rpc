@@ -10,3 +10,4 @@ phy-tuntap_interface = ["smoltcp/phy-tuntap_interface"]
 [dependencies]
 smoltcp = {version = "0.12.0", features = ["phy-tuntap_interface"]}
 getopts = "0.2"
+log = "0.4.4"
