@@ -118,12 +118,12 @@ pub fn send(
     let mut iface = Interface::new(config, &mut device, Instant::now());
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs
-            .push(IpCidr::new(IpAddress::v4(172, 28, 24, 156), 20)) // Local IP with subnet mask
+            .push(IpCidr::new(IpAddress::v4(192, 168, 42, 100), 24)) // Local IP with subnet mask
             .map_err(|_| "Failed to update IP addresses").unwrap()
     });
     iface
         .routes_mut()
-        .add_default_ipv4_route(Ipv4Address::new(172, 28, 16, 0)) // Default gateway
+        .add_default_ipv4_route(Ipv4Address::new(192, 168, 42, 0)) // Default gateway
         .map_err(|_| "Failed to add default route")?;
 
     let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 1024]);
