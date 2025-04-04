@@ -109,7 +109,7 @@ pub fn send(
     port: u16,
     _payload: String,
 ) -> Result<String, &'static str> {
-    let tuntap = TunTapInterface::new("tap", Medium::Ethernet).map_err(|_| "Failed to create TUN/TAP interface")?;
+    let tuntap = TunTapInterface::new("tap0", Medium::Ethernet).map_err(|_| "Failed to create TUN/TAP interface")?;
     let fd = tuntap.as_raw_fd();
     let mut device = create_device(tuntap);
     let mut config = Config::new(EthernetAddress(ethernet_mac).into());
