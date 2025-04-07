@@ -2,15 +2,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
 
-use std::io;
-use std::os::unix::io::AsRawFd;
-use log::trace;
-
 use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::phy::{Medium, TunTapInterface};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{EthernetAddress, IpAddress, Ipv4Address, IpCidr};
-use smoltcp::phy::{wait as phy_wait, PcapMode, TunTapInterface, FaultInjector, Medium, Tracer, PcapWriter};
+use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address};
 
 const DEFAULT_URL: &str = "http://localhost";
 const DEFAULT_PORT: u16 = 8332; // the default RPC port for bitcoind.
@@ -109,11 +105,8 @@ pub fn send(
     port: u16,
     _payload: String,
 ) -> Result<String, &'static str> {
-    let tuntap = TunTapInterface::new("tap0", Medium::Ethernet).map_err(|_| "Failed to create TUN/TAP interface")?;
-    let fd = tuntap.as_raw_fd();
-    let mut device = TunTapInterface::from_fd(fd, Medium::Ethernet, 1500).map_err(|_| "Failed to create TUN/TAP interface")?;
-    let mut config = Config::new(EthernetAddress(ethernet_mac).into());
-    config.random_seed = 0; // Use a fixed seed for testing purposes.
+    let mut device = TunTapInterface::new("tap0", Medium::Ethernet).map_err(|_| "Failed to create TUN/TAP interface")?;
+    let config = Config::new(EthernetAddress(ethernet_mac).into());
 
     let mut iface = Interface::new(config, &mut device, Instant::now());
     iface.update_ip_addrs(|ip_addrs| {
@@ -185,7 +178,7 @@ pub fn send(
             _ => state,
         };
 
-        phy_wait(fd, iface.poll_delay(timestamp, &sockets)).expect("wait error");
+        //phy_wait(fd, iface.poll_delay(timestamp, &sockets)).expect("wait error");
     }
 
     Ok(response)
@@ -236,7 +229,6 @@ mod tests {
         let ethernet_mac = [0x00, 0x15, 0x5d, 0xc7, 0xbf, 0x6d];
 
         let result = send(ethernet_mac, ip, port, payload).unwrap();
-        println!("Result: {}", result);
         assert!(result.len() > 0);
     }
 }
