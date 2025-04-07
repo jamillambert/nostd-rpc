@@ -111,7 +111,7 @@ pub fn send(
 ) -> Result<String, &'static str> {
     let tuntap = TunTapInterface::new("tap0", Medium::Ethernet).map_err(|_| "Failed to create TUN/TAP interface")?;
     let fd = tuntap.as_raw_fd();
-    let mut device = create_device(tuntap);
+    let mut device = TunTapInterface::from_fd(fd, Medium::Ethernet, 1500).map_err(|_| "Failed to create TUN/TAP interface")?;
     let mut config = Config::new(EthernetAddress(ethernet_mac).into());
     config.random_seed = 0; // Use a fixed seed for testing purposes.
 
@@ -189,38 +189,6 @@ pub fn send(
     }
 
     Ok(response)
-}
-
-fn create_device(tuntap: TunTapInterface) -> FaultInjector<Tracer<PcapWriter<TunTapInterface, Box<dyn io::Write>>>> {
-    let drop_chance = 0;
-    let corrupt_chance = 0;
-    let size_limit = 0;
-    let tx_rate_limit = 0;
-    let rx_rate_limit = 0;
-    let shaping_interval = 0;
-
-    let pcap_writer: Box<dyn io::Write> = Box::new(io::sink());
-
-    let seed = 0;
-
-    let device = PcapWriter::new(
-        tuntap,
-        pcap_writer,
-        PcapMode::Both,
-    );
-
-    let device = Tracer::new(device, |_timestamp, _printer| {
-        trace!("{}", _printer);
-    });
-
-    let mut device = FaultInjector::new(device, seed);
-    device.set_drop_chance(drop_chance);
-    device.set_corrupt_chance(corrupt_chance);
-    device.set_max_packet_size(size_limit);
-    device.set_max_tx_rate(tx_rate_limit);
-    device.set_max_rx_rate(rx_rate_limit);
-    device.set_bucket_interval(Duration::from_millis(shaping_interval));
-    device
 }
 
 fn append_port(url: &str, port: u16) -> String {
