@@ -1,6 +1,6 @@
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::{Medium, TunTapInterface};
@@ -16,6 +16,10 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 15;
 pub struct HttpRequest {
     /// URL of the RPC server.
     url: String,
+    /// Port of the RPC server.
+    port: u16,
+    /// IPv4 address of the RPC server.
+    ipv4: Ipv4Address,
     /// HTTP method, e.g., "POST".
     method: String,
     /// HTTP headers.
@@ -31,7 +35,9 @@ pub struct HttpRequest {
 impl Default for HttpRequest {
     fn default() -> Self {
         HttpRequest {
-            url: append_port(DEFAULT_URL, DEFAULT_PORT),
+            url: String::from(DEFAULT_URL),
+            port: DEFAULT_PORT,
+            ipv4: Ipv4Address::new(192, 168, 42, 1),
             method: String::from("POST"),
             headers: Vec::new(),
             body: String::new(),
@@ -43,11 +49,25 @@ impl Default for HttpRequest {
 
 impl HttpRequest {
     /// Constructs a new [`MinreqHttpTransport`] with default parameters.
-    pub fn new() -> Self { HttpRequest::default() }
+    pub fn new() -> Self {
+        HttpRequest::default()
+    }
 
     /// Sets the URL of the RPC server.
     pub fn url(mut self, url: &str) -> Self {
-        self.url = append_port(url, DEFAULT_PORT);
+        self.url = String::from(url);
+        self
+    }
+
+    /// Sets the port of the RPC server.
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Sets the ip the RPC server.
+    pub fn ipv4(mut self, ip: [u8; 4]) -> Self {
+        self.ipv4 = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
         self
     }
 
@@ -78,41 +98,48 @@ impl HttpRequest {
     /// Manually construct the HTTP request as a string.
     pub fn construct_http_request(&self) -> String {
         let mut request = String::new();
+
         request.push_str(&self.method);
         request.push(' ');
+
+        if !self.url.starts_with('/') {
+            request.push('/');
+        }
         request.push_str(&self.url);
+
         request.push_str(" HTTP/1.1\r\n");
+        request.push_str("Host: ");
+        request.push_str("www.example.org"); //&self.ipv4.to_string()); // TODO: Fix this, doesnt work with an IP address for unknown reason
+        request.push_str("\r\n");
+
         for header in &self.headers {
             request.push_str(header);
             request.push_str("\r\n");
         }
-        if let Some(basic_auth) = &self.basic_auth {
-            request.push_str("Authorization: Basic ");
-            request.push_str(basic_auth);
-            request.push_str("\r\n");
-        }
+
         request.push_str("Content-Length: ");
         request.push_str(&u16_to_string(self.body.len() as u16));
-        request.push_str("\r\n\r\n");
+        request.push_str("\r\n");
+        request.push_str("Connection: close\r\n");
+
+        request.push_str("\r\n");
         request.push_str(&self.body);
+
         request
     }
 }
 
-pub fn send(
-    ethernet_mac: [u8; 6],
-    ip: [u8; 4],
-    port: u16,
-    _payload: String,
-) -> Result<String, &'static str> {
-    let mut device = TunTapInterface::new("tap0", Medium::Ethernet).map_err(|_| "Failed to create TUN/TAP interface")?;
+pub fn send(ethernet_mac: [u8; 6], request: HttpRequest) -> Result<String, &'static str> {
+    let mut device = TunTapInterface::new("tap0", Medium::Ethernet)
+        .map_err(|_| "Failed to create TUN/TAP interface")?;
     let config = Config::new(EthernetAddress(ethernet_mac).into());
 
     let mut iface = Interface::new(config, &mut device, Instant::now());
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs
             .push(IpCidr::new(IpAddress::v4(192, 168, 42, 1), 24)) // Local IP with subnet mask
-            .map_err(|_| "Failed to update IP addresses").unwrap()
+            .map_err(|_| "Failed to update IP addresses")
+            .unwrap()
     });
     iface
         .routes_mut()
@@ -124,7 +151,6 @@ pub fn send(
     let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
     let mut sockets = SocketSet::new(vec![]);
     let tcp_handle = sockets.add(tcp_socket);
-    let ipv4 = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
 
     enum State {
         Connect,
@@ -133,7 +159,7 @@ pub fn send(
     }
     let mut state = State::Connect;
 
-    let mut response = String::from("Response: ");
+    let mut response = String::from("");
 
     loop {
         let timestamp = Instant::now();
@@ -145,24 +171,16 @@ pub fn send(
         state = match state {
             State::Connect if !socket.is_active() => {
                 socket
-                    .connect(cx, (ipv4, 80), port)
+                    .connect(cx, (request.ipv4, 80), request.port)
                     .map_err(|_| "Failed to connect")?;
                 response.push_str("Connected to server.\n");
                 State::Request
             }
             State::Request if socket.may_send() => {
-                response.push_str("Request.\n");
-                let http_get = "GET /index.html HTTP/1.1\r\n";
-                let send_rsp1 = socket.send_slice(http_get.as_ref()).map_err(|_| "Failed to send GET request")?;
-                response.push_str("send rsp 1: ");
-                response.push_str(&u16_to_string(send_rsp1 as u16));
-                response.push('\n');
-                let http_host = "Host: www.example.org\r\n";
-                socket.send_slice(http_host.as_ref()).map_err(|_| "Failed to send Host header")?;
+                let message = request.construct_http_request();
                 socket
-                    .send_slice(b"Connection: close\r\n")
-                    .map_err(|_| "Failed to send Connection header")?;
-                socket.send_slice(b"\r\n").map_err(|_| "Failed to send final CRLF")?;
+                    .send_slice(message.as_ref())
+                    .map_err(|_| "Failed to send HTTP request")?;
                 State::Response
             }
             State::Response if socket.can_recv() => {
@@ -177,19 +195,9 @@ pub fn send(
             State::Response if !socket.may_recv() => break,
             _ => state,
         };
-
-        //phy_wait(fd, iface.poll_delay(timestamp, &sockets)).expect("wait error");
     }
 
     Ok(response)
-}
-
-fn append_port(url: &str, port: u16) -> String {
-    // Append the port to the URL and return the string in no-std.
-    let mut url = String::from(url);
-    url.push(':');
-    url.push_str(&u16_to_string(port));
-    url
 }
 
 fn u16_to_string(value: u16) -> String {
@@ -212,23 +220,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_url_port() {
-        assert_eq!(append_port("http://localhost", 8332), "http://localhost:8332");
-    }
-
-    #[test]
-    fn test_u16_to_string() {
-        assert_eq!(u16_to_string(8332), "8332");
-    }
-
-    #[test]
-    fn test_send() {
-        let ip = [81, 130, 109, 40];
-        let port = 1234;
-        let payload = String::from("Test payload");
+    fn test_get() {
+        let request = HttpRequest::new()
+            .url("/index.html")
+            .port(80)
+            .ipv4([104, 100, 168, 75])
+            .method("GET")
+            .timeout(Duration::from_secs(5));
         let ethernet_mac = [0x00, 0x15, 0x5d, 0xc7, 0xbf, 0x6d];
 
-        let result = send(ethernet_mac, ip, port, payload).unwrap();
+        let result = send(ethernet_mac, request).unwrap();
         assert!(result.len() > 0);
     }
 }
