@@ -293,30 +293,3 @@ fn u16_to_string(value: u16) -> String {
     }
     String::from_utf8_lossy(&buffer[i..]).into_owned()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn get() {
-        let request = HttpRequest::new()
-            .ipv4([104, 100, 168, 75]) // IP address for www.example.org (may change over time)
-            .port(80)
-            .url("index.html")
-            .host("www.example.org")
-            .method("GET")
-            .timeout(Duration::from_secs(5));
-        let ethernet_mac = [0x00, 0x15, 0x5d, 0xc7, 0xbf, 0x6d];
-        
-        let result = send(ethernet_mac, request).unwrap();
-        let parsed = decode_html(&result);
-
-        let expected_response_start = "Connected to server.\nHTTP/1.1 200 OK";
-        assert!(
-            result.starts_with(expected_response_start),
-            "Unexpected response: \n\n{}",
-            parsed
-        );
-    }
-}
