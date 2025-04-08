@@ -9,17 +9,19 @@ use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address};
 
 const DEFAULT_URL: &str = "http://localhost";
-const DEFAULT_PORT: u16 = 8332; // the default RPC port for bitcoind.
+const DEFAULT_PORT: u16 = 80;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 15;
 
 #[derive(Clone, Debug)]
 pub struct HttpRequest {
-    /// URL of the RPC server.
-    url: String,
-    /// Port of the RPC server.
-    port: u16,
     /// IPv4 address of the RPC server.
     ipv4: Ipv4Address,
+    /// Port of the RPC server.
+    port: u16,
+    /// URL of the RPC server.
+    url: String,
+    /// IPv4 address of the RPC server.
+    host: String,
     /// HTTP method, e.g., "POST".
     method: String,
     /// HTTP headers.
@@ -35,9 +37,10 @@ pub struct HttpRequest {
 impl Default for HttpRequest {
     fn default() -> Self {
         HttpRequest {
-            url: String::from(DEFAULT_URL),
-            port: DEFAULT_PORT,
             ipv4: Ipv4Address::new(192, 168, 42, 1),
+            port: DEFAULT_PORT,
+            url: String::from("/"),
+            host: String::from(DEFAULT_URL),
             method: String::from("POST"),
             headers: Vec::new(),
             body: String::new(),
@@ -53,9 +56,9 @@ impl HttpRequest {
         HttpRequest::default()
     }
 
-    /// Sets the URL of the RPC server.
-    pub fn url(mut self, url: &str) -> Self {
-        self.url = String::from(url);
+    /// Sets the ip the RPC server.
+    pub fn ipv4(mut self, ip: [u8; 4]) -> Self {
+        self.ipv4 = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
         self
     }
 
@@ -65,9 +68,15 @@ impl HttpRequest {
         self
     }
 
+    /// Sets the URL of the RPC server.
+    pub fn url(mut self, url: &str) -> Self {
+        self.url = String::from(url);
+        self
+    }
+
     /// Sets the ip the RPC server.
-    pub fn ipv4(mut self, ip: [u8; 4]) -> Self {
-        self.ipv4 = Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]);
+    pub fn host(mut self, host: &str) -> Self {
+        self.host = String::from(host);
         self
     }
 
@@ -109,7 +118,7 @@ impl HttpRequest {
 
         request.push_str(" HTTP/1.1\r\n");
         request.push_str("Host: ");
-        request.push_str("www.example.org"); //&self.ipv4.to_string()); // TODO: Fix this, doesnt work with an IP address for unknown reason
+        request.push_str(&self.host); // TODO: Doesn't work with an IP address for unknown reason
         request.push_str("\r\n");
 
         for header in &self.headers {
@@ -130,8 +139,7 @@ impl HttpRequest {
 }
 
 pub fn send(ethernet_mac: [u8; 6], request: HttpRequest) -> Result<String, &'static str> {
-    let mut device = TunTapInterface::new("tap0", Medium::Ethernet)
-        .map_err(|_| "Failed to create TUN/TAP interface")?;
+    let mut device = create_tuntap_interface("tap0", Medium::Ethernet)?;
     let config = Config::new(EthernetAddress(ethernet_mac).into());
 
     let mut iface = Interface::new(config, &mut device, Instant::now());
@@ -160,28 +168,44 @@ pub fn send(ethernet_mac: [u8; 6], request: HttpRequest) -> Result<String, &'sta
     let mut state = State::Connect;
 
     let mut response = String::from("");
-
+    let start = Instant::now();
     loop {
         let timestamp = Instant::now();
-        let _ = iface.poll(timestamp, &mut device, &mut sockets);
+        iface.poll(timestamp, &mut device, &mut sockets);
 
         let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
         let cx = iface.context();
 
         state = match state {
-            State::Connect if !socket.is_active() => {
-                socket
-                    .connect(cx, (request.ipv4, 80), request.port)
-                    .map_err(|_| "Failed to connect")?;
-                response.push_str("Connected to server.\n");
-                State::Request
+            State::Connect => {
+                if !socket.is_active() {
+                    socket
+                        .connect(cx, (request.ipv4, 80), request.port)
+                        .map_err(|_| "Failed to connect")?;
+                    response.push_str("Connected to server.\n");
+                    State::Request
+                } else {
+                    if timestamp - start > request.timeout {
+                        return Err("Connection Timeout");
+                    } else {
+                        state
+                    }
+                }
             }
-            State::Request if socket.may_send() => {
-                let message = request.construct_http_request();
-                socket
-                    .send_slice(message.as_ref())
-                    .map_err(|_| "Failed to send HTTP request")?;
-                State::Response
+            State::Request => {
+                if socket.may_send() {
+                    let message = request.construct_http_request();
+                    socket
+                        .send_slice(message.as_ref())
+                        .map_err(|_| "Failed to send HTTP request")?;
+                    State::Response
+                } else {
+                    if timestamp - start > request.timeout {
+                        return Err("Request Timeout");
+                    } else {
+                        state
+                    }
+                }
             }
             State::Response if socket.can_recv() => {
                 socket
@@ -195,9 +219,64 @@ pub fn send(ethernet_mac: [u8; 6], request: HttpRequest) -> Result<String, &'sta
             State::Response if !socket.may_recv() => break,
             _ => state,
         };
+        if timestamp - start > request.timeout {
+            return Err("Response Timeout");
+        }
+    }
+    Ok(response)
+}
+
+pub fn decode_html(input: &str) -> String {
+    let mut decoded = String::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            // HTML character encoding starting with '&'
+            if let Some('#') = chars.peek() {
+                chars.next();
+                let num_str: String = chars.by_ref()
+                    .take_while(|&digit| digit.is_digit(10))
+                    .collect();
+                if let Some(';') = chars.next() {
+                    if let Ok(num) = num_str.parse::<u32>() {
+                        if let Some(decoded_char) = char::from_u32(num) {
+                            decoded.push(decoded_char);
+                            continue;
+                        }
+                    }
+                }
+            }
+        } else if c == '%' {
+            // URL chacter encoding starting with '%'
+            let hex_str: String = chars.by_ref().take(2).collect();
+            if let Ok(byte) = u8::from_str_radix(&hex_str, 16) {
+                decoded.push(byte as char);
+                continue;
+            }
+        }
+        decoded.push(c);
     }
 
-    Ok(response)
+    decoded
+}
+
+fn create_tuntap_interface(name: &str, medium: Medium) -> Result<TunTapInterface, &'static str> {
+    // Try to create the TUN/TAP interface up to 3 times
+    // with a 1-second delay between attempts.
+    // This is a workaround for the issue where the interface is not available immediately.
+    for _ in 0..3 {
+        match TunTapInterface::new(name, medium) {
+            Ok(interface) => return Ok(interface),
+            Err(_) => {
+                let start = Instant::now();
+                while Instant::now() - start < Duration::from_secs(1) {
+                    // Wait for 1 second before retrying
+                }
+            }
+        }
+    }
+    Err("Failed to create TUN/TAP interface after 3 attempts")
 }
 
 fn u16_to_string(value: u16) -> String {
@@ -220,16 +299,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get() {
+    fn get() {
         let request = HttpRequest::new()
-            .url("/index.html")
+            .ipv4([104, 100, 168, 75]) // IP address for www.example.org (may change over time)
             .port(80)
-            .ipv4([104, 100, 168, 75])
+            .url("index.html")
+            .host("www.example.org")
             .method("GET")
             .timeout(Duration::from_secs(5));
         let ethernet_mac = [0x00, 0x15, 0x5d, 0xc7, 0xbf, 0x6d];
-
+        
         let result = send(ethernet_mac, request).unwrap();
-        assert!(result.len() > 0);
+        let parsed = decode_html(&result);
+
+        let expected_response_start = "Connected to server.\nHTTP/1.1 200 OK";
+        assert!(
+            result.starts_with(expected_response_start),
+            "Unexpected response: \n\n{}",
+            parsed
+        );
     }
 }

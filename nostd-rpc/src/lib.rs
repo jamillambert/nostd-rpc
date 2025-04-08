@@ -3,4 +3,4 @@
 
 extern crate alloc;
 
-mod http;
+pub mod http;
