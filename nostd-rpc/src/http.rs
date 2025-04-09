@@ -118,7 +118,7 @@ impl HttpRequest {
 
         request.push_str(" HTTP/1.1\r\n");
         request.push_str("Host: ");
-        request.push_str(&self.host); // TODO: Doesn't work with an IP address for unknown reason
+        request.push_str(&self.host); // TODO: Doesn't work with an IP address
         request.push_str("\r\n");
 
         for header in &self.headers {

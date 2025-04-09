@@ -12,7 +12,7 @@ mod tests {
             .url("/index.html")
             .method("GET")
             .timeout(Duration::from_secs(5));
-        let ethernet_mac = [0x00, 0x15, 0x5d, 0xc7, 0xbf, 0x4d];
+        let ethernet_mac = [0x05, 0x2d, 0x1e, 0xef, 0x5c, 0x45];
         let result = http::send(ethernet_mac, request).unwrap();
         let parsed = http::decode_html(&result);
 
@@ -35,7 +35,7 @@ mod tests {
             .header("Content-Type: application/json")
             .body("{\"key1\": \"value1\", \"key2\": \"value2\"}")
             .timeout(Duration::from_secs(5));
-        let ethernet_mac = [0x00, 0x15, 0x5d, 0xc7, 0xbf, 0x4d];
+        let ethernet_mac = [0x05, 0x2d, 0x1e, 0xef, 0x5c, 0x45];
         let result = http::send(ethernet_mac, request).unwrap();
         let parsed = http::decode_html(&result);
 
